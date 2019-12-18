@@ -178,6 +178,7 @@ def do_setup(package_data):
             "cython",
             "dataclasses",
             "hydra-core",
+            "kaldi_io",
             "numpy",
             "regex",
             "sacrebleu>=1.4.12",
