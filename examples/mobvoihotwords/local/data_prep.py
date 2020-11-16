@@ -16,19 +16,29 @@ from pathlib import Path
 
 import numpy as np
 
+import torch
+
 from fairseq.data.data_utils import numpy_seed
 
 
 try:
-    # TODO use pip install once it's available
-    from espresso.tools.lhotse.lhotse import (
+    from lhotse import (
         CutSet, Mfcc, MfccConfig, LilcomFilesWriter, RecordingSet, SupervisionSet
     )
-    from espresso.tools.lhotse.lhotse.augmentation import SoxEffectTransform, RandomValue
-    from espresso.tools.lhotse.lhotse.manipulation import combine
-    from espresso.tools.lhotse.lhotse.recipes.mobvoihotwords import download_and_untar, prepare_mobvoihotwords
+    from lhotse.augmentation import SoxEffectTransform, RandomValue
+    from lhotse.manipulation import combine
+    from lhotse.recipes.mobvoihotwords import download_and_untar, prepare_mobvoihotwords
 except ImportError:
-    raise ImportError("Please install Lhotse by `make lhotse` after entering espresso/tools")
+    raise ImportError("Please install Lhotse by `pip install lhotse==0.2`")
+
+
+# Torch's multithreaded behavior needs to be disabled or it wastes a lot of CPU and
+# slow things down.  Do this outside of main() because it needs to take effect
+# even when we are not invoking the main (notice: "spawn" is the method used
+# in multiprocessing, which is to get around some problems with torchaudio's invocation of
+# sox).
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 
 logging.basicConfig(
@@ -72,20 +82,18 @@ def main(args):
     download_and_untar(root_dir)
 
     logger.info(f"Prepare the manifests")
-    partitions = ["train", "dev", "test"]
-    if all(
-        (output_dir / f"{key}_{part}.json").is_file()
-        for key in ["recordings", "supervisions"] for part in partitions
-    ):
-        logger.info(f"All the manifests files are found in {output_dir}. Load from them directly")
+    data_parts = ["train", "dev", "test"]
+    try:
         mobvoihotwords_manifests = defaultdict(dict)
-        for part in partitions:
-            mobvoihotwords_manifests[part] = {
-                "recordings": RecordingSet.from_json(output_dir / f"recordings_{part}.json"),
-                "supervisions": SupervisionSet.from_json(output_dir / f"supervisions_{part}.json")
-            }
-    else:
-        logger.info("It may take long time")
+        for part in data_parts:
+            mobvoihotwords_manifests[part]["recordings"] = RecordingSet.from_json(
+                output_dir / f"recordings_{part}.json"
+            )
+            mobvoihotwords_manifests[part]["supervisions"] = SupervisionSet.from_json(
+                output_dir / f"supervisions_{part}.json"
+            )
+    except Exception as e:
+        logger.warning("Mobvoihotwords manifests not found on disk, preparing them from scratch: " + str(e))
         mobvoihotwords_manifests = prepare_mobvoihotwords(corpus_dir, output_dir)
     logger.info(
         "train/dev/test size: {}/{}/{}".format(
@@ -96,16 +104,18 @@ def main(args):
     )
 
     # Data augmentation
+    num_workers = min(args.num_workers, os.cpu_count())
     np.random.seed(args.seed)
     # equivalent to Kaldi's mfcc_hires config
     mfcc = Mfcc(config=MfccConfig(num_mel_bins=40, num_ceps=40, low_freq=20, high_freq=-400))
     for part, manifests in mobvoihotwords_manifests.items():
+        logger.info(part)
         cut_set = CutSet.from_manifests(
             recordings=manifests["recordings"],
             supervisions=manifests["supervisions"],
         )
         sampling_rate = next(iter(cut_set)).sampling_rate
-        with ProcessPoolExecutor(args.num_workers, mp_context=multiprocessing.get_context("spawn")) as ex:
+        with ProcessPoolExecutor(num_workers, mp_context=multiprocessing.get_context("spawn")) as ex:
             if part == "train":
                 # split negative recordings into smaller chunks with lengths sampled from
                 # length distribution of positive recordings

@@ -16,10 +16,10 @@ from fairseq.data import FairseqDataset, data_utils
 
 import espresso.tools.utils as speech_utils
 try:
-    # TODO use pip install once it's available
-    from espresso.tools.lhotse.lhotse import CutSet
+    from lhotse import CutSet
+    from lhotse.utils import compute_num_frames
 except ImportError:
-    raise ImportError("Please install Lhotse by `make lhotse` after entering espresso/tools")
+    raise ImportError("Please install Lhotse by `pip install lhotse==0.2`")
 
 
 def collate(
@@ -57,7 +57,7 @@ def collate(
     ntokens = src_lengths.sum().item()
 
     target = None
-    if samples[0].get("target", None) is not None and len(samples[0].target) > 0:
+    if samples[0].get("target", None) is not None and len(samples[0]["target"]) > 0:
         # reorder the list of samples to make things easier
         # (no need to reorder every element in target)
         samples = [samples[i] for i in sort_order.numpy()]
@@ -152,8 +152,8 @@ class K2AsrDataset(FairseqDataset):
                 {
                     "sequence_idx": index,
                     "text": sup.text,
-                    "start_frame": round(sup.start / cut.frame_shift),
-                    "num_frames": round(sup.duration / cut.frame_shift),
+                    "start_frame": compute_num_frames(sup.start, cut.frame_shift),
+                    "num_frames": compute_num_frames(sup.duration, cut.frame_shift),
                 }
                 # CutSet's supervisions can exceed the cut, when the cut starts/ends in the middle
                 # of a supervision (they would have relative times e.g. -2 seconds start, meaning

@@ -52,9 +52,9 @@ def main(args):
 
     with open(args.lexicon_fst_path, "r", encoding="utf-8") as f:
         L = k2.Fsa.from_openfst(f.read(), acceptor=False)
-    L = k2.arc_sort(L.invert_()).invert_()  # sort on olabels
+    L = k2.arc_sort(L)
 
-    with open(args.phone_lm_fst_path, "r", encoding="utf-8") as f:
+    with open(args.phone_lm_fsa_path, "r", encoding="utf-8") as f:
         phone_lm = k2.Fsa.from_openfst(f.read(), acceptor=True)
     phone_lm = k2.arc_sort(phone_lm)
 

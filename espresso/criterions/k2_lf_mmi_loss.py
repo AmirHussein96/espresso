@@ -6,18 +6,18 @@
 from dataclasses import dataclass, field
 import logging
 import math
+from omegaconf import II
 from typing import Any, Dict, List, Optional
 
 import torch
+from torch import Tensor
 
 from fairseq import utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from fairseq.models import BaseFairseqModel
-from fairseq.models.fairseq_encoder import EncoderOut
 from fairseq.tasks import FairseqTask
 from fairseq.logging import metrics
-from omegaconf import II
 
 try:
     import k2
@@ -62,21 +62,17 @@ def create_numerator_graphs(texts: List[str], HCL_fst_inv: k2.Fsa, symbols: k2.S
 
 @register_criterion("k2_lattice_free_mmi", dataclass=K2LatticeFreeMMICriterionConfig)
 class K2LatticeFreeMMICriterion(FairseqCriterion):
-
-    def __init__(
-        self, task: FairseqTask, sentence_avg: bool, denominator_fst_path: str,
-        HCL_fst_path: str, word_symbol_table_path: str, xent_regularization_coefficient: float,
-    ):
+    def __init__(self, cfg: K2LatticeFreeMMICriterionConfig, task: FairseqTask):
         super().__init__(task)
 
-        self.sentence_avg = sentence_avg
+        self.sentence_avg = cfg.sentence_avg
         self.den_graph = k2.create_fsa_vec(
-            k2.Fsa.from_dict(torch.load(denominator_fst_path))
+            [k2.Fsa.from_dict(torch.load(cfg.denominator_fst_path))]
         )  # has to be an FsaVec to be able to intersect with a batch of dense fsas
         self.den_graph.scores.requires_grad_(False)
-        self.HCL_fst_inv = k2.Fsa.from_dict(torch.load(HCL_fst_path)).invert_()
-        self.symbol_table = k2.SymbolTable.from_file(word_symbol_table_path)
-        self.xent_regularize = xent_regularization_coefficient
+        self.HCL_fst_inv = k2.arc_sort(k2.Fsa.from_dict(torch.load(cfg.HCL_fst_path)).invert_())
+        self.symbol_table = k2.SymbolTable.from_file(cfg.word_symbol_table_path)
+        self.xent_regularize = cfg.xent_regularization_coefficient
 
     def forward(
         self, model: BaseFairseqModel, sample: List[Dict[str, Any]], reduce: Optional[bool] = True,
@@ -104,16 +100,16 @@ class K2LatticeFreeMMICriterion(FairseqCriterion):
         return loss, sample_size, logging_output
 
     def compute_loss(
-        self, net_output: EncoderOut, sample: List[Dict[str, Any]], reduce: Optional[bool] = True,
+        self, net_output: Dict[str, List[Tensor]], sample: List[Dict[str, Any]], reduce: Optional[bool] = True,
     ):
         # create the dense fsts from the network's output
-        encoder_out = net_output.encoder_out.transpose(0, 1)  # T x B x V -> B x T x V
-        out_lengths = net_output.src_lengths.long()  # B
+        encoder_out = net_output["encoder_out"][0].transpose(0, 1)  # T x B x V -> B x T x V
+        out_lengths = net_output["src_lengths"][0]  # B
         supervision_segments = torch.stack(
             # seq_index, start_frame, lengths
             (sample["target"]["sequence_idx"], sample["target"]["start_frame"], out_lengths),
             dim=1
-        )
+        ).int().cpu()
         dense_fsa_vec = k2.DenseFsaVec(encoder_out, supervision_segments)
 
         # numerator computation
